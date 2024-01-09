@@ -62,9 +62,9 @@ def measure(channel, port, barcode):
             channel_scale = scope.query(f'{channel}:SCAle?')
             channel_offset = scope.query(f'{channel}:OFFSet?')
             if round(float(channel_scale.replace("\n",""))) != 2 or round(float(channel_offset.replace("\n","")))  != 30: 
-                Volts,yzero = setupInstrumentValue(channel, port, barcode, scope)
+                Volts,yzero,Time = setupInstrumentValue(channel, port, barcode, scope)
             else:
-                Volts,yzero = getMeasurementInstrumentValue(channel, port, barcode, scope)
+                Volts,yzero,Time = getMeasurementInstrumentValue(channel, port, barcode, scope)
             high= ""
             low = ""
 
@@ -144,8 +144,8 @@ def setupInstrumentValue(channel, port, barcode, scope):
         scope.write(channel+':BWLImit ON')  # Enable bandwidth limit for Channel 1
         scope.write(channel+':BWLImit:FREQuency 200000000') 
         time.sleep(3) 
-        Volts, yzero = getMeasurementInstrumentValue(channel, port, barcode,scope)
-        return Volts, yzero
+        Volts, yzero, Time = getMeasurementInstrumentValue(channel, port, barcode,scope)
+        return Volts, yzero, Time
     except IndexError:
         return None
 
@@ -164,7 +164,7 @@ def getMeasurementInstrumentValue(channel, port, barcode, scope):
         ADC_wave = np.array(unpack('%sB' % len(ADC_wave),ADC_wave))
         Volts = (ADC_wave - yoff) * ymult  + yzero
         Time = np.arange(0, xincr * len(Volts), xincr)
-        return Volts, yzero
+        return Volts, yzero, Time
     except IndexError:
         return None,None
 

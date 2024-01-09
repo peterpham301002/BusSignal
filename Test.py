@@ -52,11 +52,11 @@ def highest_duplicate(arr, yzero):
     max_less_than_elements = {key: value for key, value in less_than.items() if value == max_less_than}   
     return max_greater_than_elements, max_less_than_elements
 
-def acquire(channel, port, barcode):
+def measure(channel, port, barcode):
     if barcode is not None: 
         try:
-            scope = rm.open_resource(port)
-            scope.write("DATa:SOU " + channel)
+            scope = rm.open_resource(port) # Open port to connect to instrument
+            scope.write("DATa:SOU " + channel) # Choose channel
             scope.write('DATA:WIDTH 1')
             scope.write('DATA:ENC RPB')
             channel_scale = scope.query(f'{channel}:SCAle?')
@@ -193,6 +193,6 @@ if __name__ == "__main__":
     parser.add_argument("--port", help="Filename override", default=port)
     parser.add_argument("--barcode", help="Barcode input", default="01960239-0000001-1009090-101")
     args = parser.parse_args()
-    acquire(**args.__dict__)
+    measure(**args.__dict__)
     
     

@@ -20,10 +20,16 @@ from collections import defaultdict
 from collections import Counter
 from colorama import Fore, Back, Style
 
-passed = True
+global_passed = True
 status = None
 result = None
 rm = visa.ResourceManager()
+
+# List available resources (instruments)
+resources = rm.list_resources()
+
+# Print the list of resources
+print("Available resources:", resources)
 print(rm.session)
 
 def printColour(colour, text):
@@ -34,7 +40,6 @@ def printColour(colour, text):
     else:
         print(Fore.RESET, text)
     print(Fore.RESET)
-
 
 connection = None
 try:
@@ -81,13 +86,13 @@ def getInstrument():
         print("An error occurred:", e)
     return port, active_channels
 
-def setupInstrumentValue(channel, port, barcode, scope):
+def setupInstrumentValue(channel, port, barcode, scope, temprs):
     try:
-        scope.write(channel+':SCAle '+ result["VoltDiv"])
-        scope.write(channel+':OFFset 30' + abs(int(result["Offset"])))
+        scope.write(channel+':SCAle '+ temprs["VoltDiv"])
+        scope.write(channel+':OFFset ' + str(abs(int(temprs["Offset"]))))
         scope.write('HORizontal:SCAle 0.0001')
         scope.write(channel+':BWLImit ON')  # Enable bandwidth limit for Channel 1
-        scope.write(channel+':BWLImit:FREQuency ' + result["BWlimit"]) 
+        scope.write(channel+':BWLImit:FREQuency ' + str(temprs["BWlimit"])) 
         time.sleep(3) 
         Volts, yzero, Time = getMeasurementInstrumentValue(channel, port, barcode,scope)
         return Volts, yzero, Time
@@ -125,9 +130,10 @@ def getMeasurementSetupData(barcode):
         return None
     finally:
         cursor.close()
-        connection.close()
+        # connection.close()
 
 def measure(channel, port, barcode):
+    global global_passed
     if barcode is not None: 
         try:
             result = getMeasurementSetupData(barcode)
@@ -138,8 +144,9 @@ def measure(channel, port, barcode):
                 scope.write('DATA:ENC RPB')
                 channel_scale = scope.query(f'{channel}:SCAle?')
                 channel_offset = scope.query(f'{channel}:OFFSet?')
+                temprs = result
                 if round(float(channel_scale.replace("\n",""))) != int(result["VoltDiv"]) or round(float(channel_offset.replace("\n","")))  != abs(int(result["Offset"])): 
-                    Volts,yzero,Time = setupInstrumentValue(channel, port, barcode, scope)
+                    Volts,yzero,Time = setupInstrumentValue(channel, port, barcode, scope, temprs)
                 else:
                     Volts,yzero,Time = getMeasurementInstrumentValue(channel, port, barcode, scope)
                 high= ""
@@ -150,7 +157,7 @@ def measure(channel, port, barcode):
                 # High is the highest density of point above the 'yzero' this mean High is the element value from 'Volts' which have the most volt dupilcate value higher than 'yzero'
                 # Low is the highest density of point below the 'yzero' this mean Low is the element value from 'Volts' which have the most volt dupilcate value lower than 'yzero'
                 # If 'yzero' equal or less than Min volts then High - Low is the Max - Min volts value
-                if yzero > round(np.min(Volts),1):
+                if yzero > round(np.min(Volts),2):
                     greater_than_result, less_than_result = highest_duplicate(Volts, yzero)
                     if greater_than_result:
                         for keyHigh, value in greater_than_result.items():high = keyHigh
@@ -160,24 +167,24 @@ def measure(channel, port, barcode):
                         for keyLow, value in less_than_result.items():low = keyLow
                     else:
                         low = np.min(Volts)
-                    printColour("RED" if high < vmin[0]["High"] or high > vmax[0]["High"] else "GREEN" ,f"High voltage: {round(high,1)}")
-                    printColour("RED" if low < vmin[0]["Low"] or low > vmax[0]["Low"] else "GREEN" ,f"Low voltage: {round(low,1)}")
+                    printColour("RED" if high < vmin[0]["High"] or high > vmax[0]["High"] else "GREEN" ,f"High voltage: {round(high,2)}")
+                    printColour("RED" if low < vmin[0]["Low"] or low > vmax[0]["Low"] else "GREEN" ,f"Low voltage: {round(low,2)}")
                 else:
-                    passed = False
+                    global_passed = False
                     high = np.max(Volts)
                     low = np.min(Volts)
-                    printColour("RED" if np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"] else "GREEN" ,f"High voltage: {round(np.max(Volts),1)}")
-                    printColour("RED" if np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"] else "GREEN" ,f"Low voltage: {round(np.min(Volts),1)}")
+                    printColour("RED" if np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"] else "GREEN" ,f"High voltage: {round(np.max(Volts),2)}")
+                    printColour("RED" if np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"] else "GREEN" ,f"Low voltage: {round(np.min(Volts),2)}")
 
                 # Get Max and Min volts
-                printColour("RED" if np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"] else "GREEN" ,f"Max voltage: {round(np.max(Volts),1)}")
-                printColour("RED" if np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"] else "GREEN" ,f"Min voltage: {round(np.min(Volts),1)}")
+                printColour("RED" if np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"] else "GREEN" ,f"Max voltage: {round(np.max(Volts),2)}")
+                printColour("RED" if np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"] else "GREEN" ,f"Min voltage: {round(np.min(Volts),2)}")
                 
-                if passed == False or (np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"]) or (np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"]) or (high < vmin[0]["High"] or high > vmax[0]["High"]) or (low < vmin[0]["Low"] or low > vmax[0]["Low"]):
+                if global_passed == False or (np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"]) or (np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"]) or (high < vmin[0]["High"] or high > vmax[0]["High"]) or (low < vmin[0]["Low"] or low > vmax[0]["Low"]):
                     status = 1 #fail
                 else:
                     status = 0 #pass   
-                blob = {"Max":{np.max(Volts)}, "Min":np.min(Volts), "High": high, "Low": low}
+                blob = {"Max":[np.max(Volts)], "Min":[np.min(Volts)], "High": [high], "Low": [low]}
                 updateValue(barcode, status, blob)
                 
                 # Show Histogram x: Time - y: Volts
@@ -194,6 +201,7 @@ def measure(channel, port, barcode):
     print(Style.RESET_ALL)
 
 def updateValue(barcode, status, blob):
+    global connection
     cursor = connection.cursor()
     try:
         partno = barcode.split("-")[0]
@@ -216,7 +224,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--channel", help="The file to be upload", default=channel.replace("\n",""))
     parser.add_argument("--port", help="Filename override", default=port)
-    parser.add_argument("--barcode", help="Barcode input", default="01960239-0000001-1009090-101")
+    parser.add_argument("--barcode", help="Barcode input", default="")
     args = parser.parse_args()
     if port !='' and channel !='':
         measure(**args.__dict__)

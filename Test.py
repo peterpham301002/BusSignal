@@ -8,17 +8,19 @@
 # ni-visa driver and ni-visa runtime to communicate with device
 
 #-------------------------------------------------------------------------------
+from ast import Not
 import numpy as np
 import time
 import pylab
 import argparse
 import oracledb 
 import json
+import sys
 from struct import unpack
 import pyvisa as visa
 from collections import defaultdict
 from collections import Counter
-from colorama import Fore, Back, Style
+from colorama import Fore, Back, Style, init
 
 global_passed = True
 status = None
@@ -33,6 +35,7 @@ print("Available resources:", resources)
 print(rm.session)
 
 def printColour(colour, text):
+    init()
     if colour == "RED":
         print(Fore.RED + text)
     elif colour == "GREEN":     
@@ -84,6 +87,7 @@ def getInstrument():
             oscilloscope.close()
     except visa.VisaIOError as e:
         print("An error occurred:", e)
+        sys.exit(1)
     return port, active_channels
 
 def setupInstrumentValue(channel, port, barcode, scope, temprs):
@@ -97,7 +101,7 @@ def setupInstrumentValue(channel, port, barcode, scope, temprs):
         Volts, yzero, Time = getMeasurementInstrumentValue(channel, port, barcode,scope)
         return Volts, yzero, Time
     except IndexError:
-        return None
+        sys.exit(1)
 
 def getMeasurementInstrumentValue(channel, port, barcode, scope):
     try:
@@ -116,27 +120,30 @@ def getMeasurementInstrumentValue(channel, port, barcode, scope):
         Time = np.arange(0, xincr * len(Volts), xincr)
         return Volts, yzero, Time
     except IndexError:
-        return None,None
+        sys.exit(1)
 
-def getMeasurementSetupData(barcode):
+def getMeasurementSetupData(barcode, flag):
     cursor = connection.cursor()
     try:
         partno = barcode.split("-")[0]
         output = cursor.var(oracledb.STRING)
-        cursor.callproc('P_GET_BUS_SIGNAL_SETUP_DATA ', [partno, output])
-        result = json.loads(output.getvalue().replace("'",'').replace("\n",""))
+        cursor.callproc('P_GET_BUS_SIGNAL_SETUP_DATA ', [partno, flag, output])
+        if output.getvalue() is not None:
+            result = json.loads(output.getvalue().replace("'",'').replace("\n",""))
+        else:
+            result = None
         return result
     except:
-        return None
+        sys.exit(1)
     finally:
         cursor.close()
         # connection.close()
 
-def measure(channel, port, barcode):
+def measure(channel, port, barcode, flag):
     global global_passed
     if barcode is not None: 
         try:
-            result = getMeasurementSetupData(barcode)
+            result = getMeasurementSetupData(barcode, flag)
             if result is not None:
                 scope = rm.open_resource(port) # Open port to connect to instrument
                 scope.write("DATa:SOU " + channel) # Choose channel
@@ -156,51 +163,50 @@ def measure(channel, port, barcode):
                 # Get the High and Low volts with 
                 # High is the highest density of point above the 'yzero' this mean High is the element value from 'Volts' which have the most volt dupilcate value higher than 'yzero'
                 # Low is the highest density of point below the 'yzero' this mean Low is the element value from 'Volts' which have the most volt dupilcate value lower than 'yzero'
-                # If 'yzero' equal or less than Min volts then High - Low is the Max - Min volts value
-                if yzero > round(np.min(Volts),2):
-                    greater_than_result, less_than_result = highest_duplicate(Volts, yzero)
-                    if greater_than_result:
-                        for keyHigh, value in greater_than_result.items():high = keyHigh
-                    else:
-                        high = np.max(Volts)
-                    if less_than_result:
-                        for keyLow, value in less_than_result.items():low = keyLow
-                    else:
-                        low = np.min(Volts)
-                    printColour("RED" if high < vmin[0]["High"] or high > vmax[0]["High"] else "GREEN" ,f"High voltage: {round(high,2)}")
-                    printColour("RED" if low < vmin[0]["Low"] or low > vmax[0]["Low"] else "GREEN" ,f"Low voltage: {round(low,2)}")
-                else:
-                    global_passed = False
-                    high = np.max(Volts)
-                    low = np.min(Volts)
-                    printColour("RED" if np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"] else "GREEN" ,f"High voltage: {round(np.max(Volts),2)}")
-                    printColour("RED" if np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"] else "GREEN" ,f"Low voltage: {round(np.min(Volts),2)}")
+                # If 'yzero' equal or less than Min volts then High - Low is the Max - Min volts 
+                
+                # if yzero > round(np.min(Volts),2):
+                #     greater_than_result, less_than_result = highest_duplicate(Volts, yzero)
+                #     if greater_than_result:
+                #         for keyHigh, value in greater_than_result.items():high = keyHigh
+                #     else:
+                #         high = np.max(Volts)
+                #     if less_than_result:
+                #         for keyLow, value in less_than_result.items():low = keyLow
+                #     else:
+                #         low = np.min(Volts)
+                #     printColour("RED" if high < vmin[0]["High"] or high > vmax[0]["High"] else "GREEN" ,f"High voltage: {round(high,2)}")
+                #     printColour("RED" if low < vmin[0]["Low"] or low > vmax[0]["Low"] else "GREEN" ,f"Low voltage: {round(low,2)}")
+                # else:
+                    # global_passed = False
+                    # high = np.max(Volts)
+                    # low = np.min(Volts)
+                    # printColour("RED" if np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"] else "GREEN" ,f"High voltage: {round(np.max(Volts),2)}")
+                    # printColour("RED" if np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"] else "GREEN" ,f"Low voltage: {round(np.min(Volts),2)}")
 
                 # Get Max and Min volts
                 printColour("RED" if np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"] else "GREEN" ,f"Max voltage: {round(np.max(Volts),2)}")
                 printColour("RED" if np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"] else "GREEN" ,f"Min voltage: {round(np.min(Volts),2)}")
                 
-                if global_passed == False or (np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"]) or (np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"]) or (high < vmin[0]["High"] or high > vmax[0]["High"]) or (low < vmin[0]["Low"] or low > vmax[0]["Low"]):
+                if(np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"]) or (np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"]):
                     status = 1 #fail
                 else:
                     status = 0 #pass   
-                blob = {"Max":[np.max(Volts)], "Min":[np.min(Volts)], "High": [high], "Low": [low]}
-                updateValue(barcode, status, blob)
-                
-                # Show Histogram x: Time - y: Volts
-                # pylab.plot(Time, Volts)
-                # pylab.show()
-            
-                return high, low, round(np.max(Volts),1), round(np.min(Volts),1)
+                blob = {"Max":[np.max(Volts)], "Min":[np.min(Volts)]}
+                updateValue(barcode, status, blob, flag)
+                            
+                return round(np.max(Volts),2), round(np.min(Volts),2)
             else:
-                printColour("RED","Can not get or have data setup instrument for this part!")
+                printColour("RED","Can find data to setup instrument in this part!")
+                sys.exit(1)
         except IndexError:
-            return "error", "error", "error", "error"
+            sys.exit(1)
     else:
         print(Fore.RED + "Barcode is null")
+        sys.exit(1)
     print(Style.RESET_ALL)
 
-def updateValue(barcode, status, blob):
+def updateValue(barcode, status, blob, flag):
     global connection
     cursor = connection.cursor()
     try:
@@ -209,25 +215,34 @@ def updateValue(barcode, status, blob):
         # Define the output parameter as a string
         output_param = cursor.var(oracledb.STRING)
         # Call the stored procedure
-        cursor.callproc('P_UPDATE_BUS_SIGNAL_VALUE', [barcode, partno, order, status, json.dumps(blob).encode('utf-8'), output_param])
+        cursor.callproc('P_UPDATE_BUS_SIGNAL_VALUE', [barcode, partno, order, status, json.dumps(blob).encode('utf-8'), flag, output_param])
         # Get the value of the output parameter (assuming it returns a single string)
         output_value = output_param.getvalue()
         print("Output value:", output_value)
+    except:
+        sys.exit(1)
     finally:
         cursor.close()
         connection.close()
 
-if __name__ == "__main__":
-    # while(True):
-    # acquire(channel="CH1", port="USB::0x0699::0x0406::C040243::INSTR")   
+if __name__ == "__main__": 
     port, channel = getInstrument() #Get device port and its channel
     parser = argparse.ArgumentParser()
     parser.add_argument("--channel", help="The file to be upload", default=channel.replace("\n",""))
     parser.add_argument("--port", help="Filename override", default=port)
     parser.add_argument("--barcode", help="Barcode input", default="")
+    parser.add_argument("--flag", help="Flag", default="")
+    # flag = 0 NO_LOAD
+    # flag = 1 LOAD
+    # flag = 2 OVER_LOAD
     args = parser.parse_args()
     if port !='' and channel !='':
-        measure(**args.__dict__)
+        try:
+            measure(**args.__dict__)
+        except:
+            sys.exit(1)
     elif channel =='':
         printColour("RED", "No channel found")
+        sys.exit(1)
+        
     

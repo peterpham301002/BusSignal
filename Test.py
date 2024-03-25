@@ -12,31 +12,46 @@ from ast import Not
 import requests
 import numpy as np
 import time
-import pylab
 import argparse
-import threading
-import oracledb 
 import json
 import sys
 import tkinter as tk
 from struct import unpack
 import pyvisa as visa
+import RPi.GPIO as GPIO
 from collections import defaultdict
 from collections import Counter
 from colorama import Fore, Back, Style, init
 
-global_passed = True
+led_green = 17
+led_red = 27
+return_no_load = 22
 status = None
 result = None
 barcode = None
+
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(led_green, GPIO.OUT)
+GPIO.setup(led_red, GPIO.OUT)
+GPIO.setup(return_no_load, GPIO.OUT)
+
 rm = visa.ResourceManager()
 
-# List available resources (instruments)
-resources = rm.list_resources()
-oracledb.init_oracle_client()
-# Print the list of resources
-print("Available resources:", resources)
-print(rm.session)
+class ResultData:
+    def __init__(self, type, vmin, vmax):
+        self.type = type
+        self.vmin = vmin
+        self.vmax = vmax
+
+class BarcodeData:
+    def __init__(self, barcode, order, resultdata=None):
+        self.barcode = barcode
+        self.order = order
+        self.resultdata = resultdata if resultdata is not None else []
+    def add_result_data(self, type, vmin, vmax):
+        self.resultdata.append(ResultData(type, vmin, vmax))
+    def status(self, status):
+        self.status = status
 
 def printColour(colour, text):
     init()
@@ -57,7 +72,6 @@ def highest_duplicate(arr, yzero):
     max_greater_than_elements = {key: value for key, value in greater_than.items() if value == max_greater_than}
     max_less_than_elements = {key: value for key, value in less_than.items() if value == max_less_than}   
     return max_greater_than_elements, max_less_than_elements
-
 
 def setupInstrumentValue(channel, port, barcode, scope, temprs):
     try:
@@ -93,7 +107,7 @@ def getMeasurementInstrumentValue(channel, port, barcode, scope):
 
 def getMeasurementSetupData(barcode, flag):
     try:
-        api_url = 'http://fvn-s-web01:5000/api/MI/GetBusSignalSetup'
+        api_url = 'http://fvn-s-web01.friwo.local:5000/api/MI/GetBusSignalSetup'
         partno = barcode.split("-")[0]
         params = {'flag': f"{flag}", 'partno': f"{partno}"}
         response = requests.get(api_url, params=params)
@@ -111,71 +125,84 @@ def getMeasurementSetupData(barcode, flag):
         print(e)
         sys.exit(1)
 
-def measure(channel, port, barcode, flag):
-    global global_passed
+def measure(channel, port, barcode):
+    default_led()
+    blob = BarcodeData('','','')
+    status = '0'
+    flags = ['0','1','2']
     if barcode is not None: 
         try:
-            result = getMeasurementSetupData(barcode, flag)
-            if result is not None:
-                scope = rm.open_resource(port) # Open port to connect to instrument
-                scope.write("DATa:SOU " + channel) # Choose channel
-                scope.write('DATA:WIDTH 1')
-                scope.write('DATA:ENC RPB')
-                channel_scale = scope.query(f'{channel}:SCAle?')
-                channel_offset = scope.query(f'{channel}:OFFSet?')
-                temprs = result
-                if round(float(channel_scale.replace("\n",""))) != int(result["VoltDiv"]) or round(float(channel_offset.replace("\n","")))  != abs(int(result["Offset"])): 
-                    Volts,yzero,Time = setupInstrumentValue(channel, port, barcode, scope, temprs)
-                else:
-                    Volts,yzero,Time = getMeasurementInstrumentValue(channel, port, barcode, scope)
+            blob = BarcodeData(barcode, barcode.split("-")[2])
+            for flag in flags:
+                result = getMeasurementSetupData(barcode, flag)
+                if result is not None:
+                    types = None
+                    try:
+                        scope = rm.open_resource(port)# Open port to connect to instrument
+                    except:
+                         print("")
+                    scope.write("DATa:SOU " + channel) # Choose channel
+                    scope.write('DATA:WIDTH 1')
+                    scope.write('DATA:ENC RPB')
+                    channel_scale = scope.query(f'{channel}:SCAle?')
+                    channel_offset = scope.query(f'{channel}:OFFSet?')
+                    temprs = result
+                    if round(float(channel_scale.replace("\n",""))) != int(result["VoltDiv"]) or round(float(channel_offset.replace("\n","")))  != abs(int(result["Offset"])): 
+                        Volts,yzero,Time = setupInstrumentValue(channel, port, barcode, scope, temprs)
+                    else:
+                        Volts,yzero,Time = getMeasurementInstrumentValue(channel, port, barcode, scope)
 
-                vmin = result["Vmin"]
-                vmax = result["Vmax"]
+                    vmin = result["Vmin"]
+                    vmax = result["Vmax"]
 
-                # Get Max and Min volts
-                printColour("RED" if np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"] else "GREEN" ,f"Max voltage: {round(np.max(Volts),2)}")
-                printColour("RED" if np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"] else "GREEN" ,f"Min voltage: {round(np.min(Volts),2)}")
-                
-                if(np.max(Volts) < vmin[0]["Max"] or np.max(Volts) > vmax[0]["Max"]) or (np.min(Volts) < vmin[0]["Min"] or np.min(Volts) > vmax[0]["Min"]):
-                    status = 0 #fail
+                    # Get Max and Min volts
+                    printColour("RED" if np.max(Volts) < vmin["Max"] or np.max(Volts) > vmax["Max"] else "GREEN" ,f"Max voltage: {round(np.max(Volts),2)}")
+                    printColour("RED" if np.min(Volts) < vmin["Min"] or np.min(Volts) > vmax["Min"] else "GREEN" ,f"Min voltage: {round(np.min(Volts),2)}")
+                    
+                    if flag == '0': types = 'No load'
+                    elif flag == '1': types = 'Load'
+                    else: types = 'Over load'
+                    
+                    blob.add_result_data(types, round(np.min(Volts),2), round(np.max(Volts),2)) 
+                    
+                    if(np.max(Volts) < vmin["Max"] or np.max(Volts) > vmax["Max"]) or (np.min(Volts) < vmin["Min"] or np.min(Volts) > vmax["Min"]):
+                        status = '0' #fail
+                        break
+                    else:
+                        status = '1' #pass                                             
+                    
+                    printColour("GREEN","VMax: "+f"{round(np.max(Volts),2)}"+ "-" +"VMin: "f"{round(np.min(Volts),2)}"+ "-"+"Status: " f"{status}")
                 else:
-                    status = 1 #pass   
-                blob = {f"{barcode}":[{"Vol Max":[{"Min Limit: ": vmin[0]["Max"]}, {"Value: ": round(np.max(Volts),2)}, {"Max Limit: ": vmax[0]["Max"]}]}, {"Vol Min":[{"Min Limit: ": vmin[0]["Min"]}, {"Value: ": round(np.min(Volts),2)}, {"Max Limit: ": vmax[0]["Min"]}]}]}
-                updateValue(barcode, status, blob, flag)                           
-                printColour("GREEN","VMax: "+f"{round(np.max(Volts),2)}"+ "-" +"VMin: "f"{round(np.min(Volts),2)}"+ "-"+"Status: " f"{status}")
-                sys.exit("VMax: "+f"{round(np.max(Volts),2)}"+ "-" +"VMin: " + f"{round(np.min(Volts),2)}"+ "-"+"Status: " + f"{status}" )
-            else:
-                printColour("RED","Can not find data to setup instrument in this part!")
-                sys.exit(1)
+                    printColour("RED","Can not find data to setup instrument in this part!")
+                    break
         except Exception as e:
             print(e)
-            sys.exit(1)
+        finally:
+            blob.status = status
+            if status == '1':
+                GPIO.output(led_green, GPIO.HIGH)
+                time.sleep(2)
+            else:
+                GPIO.output(led_red, GPIO.HIGH)
+                time.sleep(2) 
+            blobstr = json.dumps(blob, default=lambda o: o.__dict__, indent=4)
+            updateValue(blobstr)       
     else:
-        print(Fore.RED + "Barcode is null")
-        sys.exit(1)
+        print(Fore.RED + "Barcode is null")        
     print(Style.RESET_ALL)
 
-def updateValue(barcode, status, blob, flag):
+def updateValue(data):
     try:
-        api_url = ''
-        partno = barcode.split("-")[0]
-        order = barcode.split("-")[2]
-        params = {'barcode': f"{barcode}", 'partno': f"{partno}", 'order': f"{order}", 'status': f"{status}", 'blod': json.dumps(blob).encode('utf-8'), 'flag': f"{flag}"}
-        response = requests.post(api_url, params=params)
-        if response.status_code == 200:
-            posts = response.json()
-            if posts:
-                return posts
-            else:
-                print(response.text)
-                return None
+        api_url = 'http://fvn-nb-063.friwo.local:8088/HomeAPI/InsertBusSignalData'  
+        headers = {'Content-Type': 'application/json'}
+        response = requests.post(api_url, data=data, headers=headers)
+        if response.status_code == 200:         
+            print(response.text)
         else:
             print(f"Error: {response.status_code}")
-            print(response.text)
-            sys.exit(1)
+            print(response.text)          
     except Exception as e:
         print(e)
-        sys.exit(1)
         
 def getInstrument():
     port = ""
@@ -200,37 +227,34 @@ def getInstrument():
         print("An error occurred:", e)
         sys.exit(1)
     return port, active_channels
-   
+
+def default_led():
+    GPIO.output(led_green, GPIO.LOW)
+    GPIO.output(led_red, GPIO.LOW)
+    GPIO.output(return_no_load, GPIO.HIGH)
+    time.sleep(1)
+    GPIO.output(return_no_load, GPIO.LOW)  
+
 if __name__ == "__main__": 
     port, channel = getInstrument()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--channel", help="The file to be upload", default=channel.replace("\n",""))
-    parser.add_argument("--port", help="Filename override", default=port)
-    parser.add_argument("--barcode", help="Barcode input", default=barcode)
-    parser.add_argument("--flag", help="Flag", default="1")
+    # parser.add_argument("--channel", help="The file to be upload", default=channel.replace("\n",""))
+    # parser.add_argument("--port", help="Filename override", default=port)
+    parser.add_argument("--barcode", help="Barcode input", default="01962072-0-0-0")
+    # parser.add_argument("--flag", help="Flag", default="1")
     # flag = 0 NO_LOAD
     # flag = 1 LOAD
     # flag = 2 OVER_LOAD
     args = parser.parse_args()
     if port !='' and channel !='':
         try:
-            measure(**args.__dict__)
+            # Send PIO to switch NO_LOAD state with flag = 0
+            flag = '0' 
+            measure(channel.replace("\n",""),port,**args.__dict__)
         except:
             sys.exit(1)
     elif channel =='':
         printColour("RED", "No channel found")
-        sys.exit(1)
+        # sys.exit(1)
         
-class VolMeasure:
-    def __init__(self):
-        self.Value = []
-    def addValue(self, v):
-        self.Value.append(v)
-class Measure:
-    def __init__(self):
-        self.VolMax = {}
-        self.VolMin = {}
-    def addObject(self, key, value):
-        self.VolMax[key] = value
-        self.VolMin[key] = value
 

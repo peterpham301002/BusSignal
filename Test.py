@@ -19,21 +19,30 @@ import tkinter as tk
 from struct import unpack
 import pyvisa as visa
 import RPi.GPIO as GPIO
+from gpiozero import Button
 from collections import defaultdict
 from collections import Counter
 from colorama import Fore, Back, Style, init
 
 led_green = 17
 led_red = 27
-return_no_load = 22
+button_pin = 22
+no_load = 16
+load = 20
+over_load = 21
 status = None
 result = None
 barcode = None
 
 GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
 GPIO.setup(led_green, GPIO.OUT)
 GPIO.setup(led_red, GPIO.OUT)
-GPIO.setup(return_no_load, GPIO.OUT)
+GPIO.setup(no_load, GPIO.OUT)
+GPIO.setup(load, GPIO.OUT)
+GPIO.setup(over_load, GPIO.OUT)
+
+btn = Button(button_pin,pull_up=True)    # True: trigger low | False: trigger high
 
 rm = visa.ResourceManager()
 
@@ -59,11 +68,13 @@ def printColour(colour, text):
         print(Fore.RED + text)
     elif colour == "GREEN":     
         print(Fore.GREEN + text)
+    elif colour == "YELLOW":     
+        print(Fore.YELLOW + text)
     else:
         print(Fore.RESET, text)
     print(Fore.RESET)
 
-def highest_duplicate(arr, yzero):
+def highest_duplicate(arr, yzero):    #get high and low voltages
     counts = Counter(arr)  
     greater_than = {key: value for key, value in counts.items() if key >= yzero and value > 1}
     less_than = {key: value for key, value in counts.items() if key < yzero and value > 1}   
@@ -73,20 +84,21 @@ def highest_duplicate(arr, yzero):
     max_less_than_elements = {key: value for key, value in less_than.items() if value == max_less_than}   
     return max_greater_than_elements, max_less_than_elements
 
-def setupInstrumentValue(channel, port, barcode, scope, temprs):
+def setupInstrumentValue(channel, port, barcode, scope, temprs):    #setup value for oscilloscope
     try:
         scope.write(channel+':SCAle '+ temprs["VoltDiv"])
         scope.write(channel+':OFFset ' + str(abs(int(temprs["Offset"]))))
-        scope.write('HORizontal:SCAle 0.0001')
-        scope.write(channel+':BWLImit ON')  # Enable bandwidth limit for Channel 1
-        scope.write(channel+':BWLImit:FREQuency ' + str(temprs["BWlimit"])) 
+        scope.write('HORizontal:SCAle 0.00001')
+        scope.write(channel+':BANdwidth ONEfifty')  # MDO and DPO 3000 series
+        scope.write(channel+':BWLImit ON')    # DPO 4000 Series
+        scope.write(channel+':BWLImit:FREQuency ' + str(temprs["BWlimit"]))    # DPO 4000 Series
         time.sleep(3) 
         Volts, yzero, Time = getMeasurementInstrumentValue(channel, port, barcode,scope)
         return Volts, yzero, Time
-    except IndexError:
-        sys.exit(1)
+    except Exception as e:
+        printColour("RED",e)
 
-def getMeasurementInstrumentValue(channel, port, barcode, scope):
+def getMeasurementInstrumentValue(channel, port, barcode, scope):    #get date from the oscilloscope
     try:
         ymult = float(scope.query('WFMPRE:YMULT?')) # y-axis least count
         yzero = float(scope.query('WFMPRE:YZERO?')) # y-axis zero error
@@ -105,7 +117,7 @@ def getMeasurementInstrumentValue(channel, port, barcode, scope):
     except IndexError:
         sys.exit(1)
 
-def getMeasurementSetupData(barcode, flag):
+def getMeasurementSetupData(barcode, flag):    #get data oscilloscope setup saved in database (BUS_SIGNAL_SETUP)
     try:
         api_url = 'http://fvn-s-web01.friwo.local:5000/api/MI/GetBusSignalSetup'
         partno = barcode.split("-")[0]
@@ -123,10 +135,9 @@ def getMeasurementSetupData(barcode, flag):
             return None
     except Exception as e:
         print(e)
-        sys.exit(1)
 
-def measure(channel, port, barcode):
-    default_led()
+def measure(channel, port, barcode):    #measure data and set pass/fail result
+    excepts = None
     blob = BarcodeData('','','')
     status = '0'
     flags = ['0','1','2']
@@ -141,9 +152,10 @@ def measure(channel, port, barcode):
                         scope = rm.open_resource(port)# Open port to connect to instrument
                     except:
                          print("")
-                    scope.write("DATa:SOU " + channel) # Choose channel
+                    scope.write("DATa:SOU " + channel)    # Choose channel
                     scope.write('DATA:WIDTH 1')
-                    scope.write('DATA:ENC RPB')
+                    scope.write('DATa:ENC RPB')    # DPO4000 Series
+                    scope.write('DATa:ENCdg RPBinary')    # DPO3000 and MDO3000 Series
                     channel_scale = scope.query(f'{channel}:SCAle?')
                     channel_offset = scope.query(f'{channel}:OFFSet?')
                     temprs = result
@@ -155,43 +167,55 @@ def measure(channel, port, barcode):
                     vmin = result["Vmin"]
                     vmax = result["Vmax"]
 
-                    # Get Max and Min volts
-                    printColour("RED" if np.max(Volts) < vmin["Max"] or np.max(Volts) > vmax["Max"] else "GREEN" ,f"Max voltage: {round(np.max(Volts),2)}")
-                    printColour("RED" if np.min(Volts) < vmin["Min"] or np.min(Volts) > vmax["Min"] else "GREEN" ,f"Min voltage: {round(np.min(Volts),2)}")
-                    
                     if flag == '0': types = 'No load'
                     elif flag == '1': types = 'Load'
                     else: types = 'Over load'
-                    
+                   
+                    # Get Max and Min volts
+                    print(types)
+                    printColour("YELLOW" if np.max(Volts) < vmin["Max"] or np.max(Volts) > vmax["Max"] else "GREEN" ,f"Max voltage: {round(np.max(Volts),2)}")
+                    printColour("YELLOW" if np.min(Volts) < vmin["Min"] or np.min(Volts) > vmax["Min"] else "GREEN" ,f"Min voltage: {round(np.min(Volts),2)}")
+                                                          
                     blob.add_result_data(types, round(np.min(Volts),2), round(np.max(Volts),2)) 
                     
                     if(np.max(Volts) < vmin["Max"] or np.max(Volts) > vmax["Max"]) or (np.min(Volts) < vmin["Min"] or np.min(Volts) > vmax["Min"]):
-                        status = '0' #fail
+                        status = '0' #fail                                                                     
                         break
                     else:
-                        status = '1' #pass                                             
-                    
-                    printColour("GREEN","VMax: "+f"{round(np.max(Volts),2)}"+ "-" +"VMin: "f"{round(np.min(Volts),2)}"+ "-"+"Status: " f"{status}")
+                        status = '1' #pass 
+                        if flag == '0': 
+                            GPIO.output(no_load, GPIO.LOW)
+                            GPIO.output(load, GPIO.HIGH)
+                            GPIO.output(over_load, GPIO.LOW)
+                        elif flag == '1':
+                            GPIO.output(no_load, GPIO.LOW)
+                            GPIO.output(load, GPIO.LOW)
+                            GPIO.output(over_load, GPIO.HIGH)   
+                        else:
+                            GPIO.output(over_load, GPIO.LOW) 
+                            GPIO.output(no_load, GPIO.HIGH)
+                            GPIO.output(load, GPIO.LOW)  
+                        time.sleep(1)
                 else:
                     printColour("RED","Can not find data to setup instrument in this part!")
                     break
         except Exception as e:
-            print(e)
-        finally:
+            excepts = e
+            printColour("RED",e)
+        
+        if result is not None and excepts is None:
             blob.status = status
             if status == '1':
                 GPIO.output(led_green, GPIO.HIGH)
-                time.sleep(2)
             else:
                 GPIO.output(led_red, GPIO.HIGH)
-                time.sleep(2) 
             blobstr = json.dumps(blob, default=lambda o: o.__dict__, indent=4)
-            updateValue(blobstr)       
+            insertValue(blobstr)      
     else:
         print(Fore.RED + "Barcode is null")        
     print(Style.RESET_ALL)
 
-def updateValue(data):
+def insertValue(data):    #insert data measured to database (DATA_BUS_SIGNAL)
     try:
         api_url = 'http://fvn-nb-063.friwo.local:8088/HomeAPI/InsertBusSignalData'  
         headers = {'Content-Type': 'application/json'}
@@ -199,12 +223,11 @@ def updateValue(data):
         if response.status_code == 200:         
             print(response.text)
         else:
-            print(f"Error: {response.status_code}")
-            print(response.text)          
+            printColour("RED",f"Error: {response.status_code}"+ "\n" + f"{response.text}")        
     except Exception as e:
-        print(e)
+        printColour("RED",e)
         
-def getInstrument():
+def getInstrument():    #find oscilloscope and connect to it
     port = ""
     active_channels = ""
     try:
@@ -224,37 +247,45 @@ def getInstrument():
             print("Connected to:", identification)
             oscilloscope.close()
     except visa.VisaIOError as e:
-        print("An error occurred:", e)
-        sys.exit(1)
+        printColour("RED","An error occurred: " + e)
     return port, active_channels
 
-def default_led():
+def default_led():    #setup led and type to default
     GPIO.output(led_green, GPIO.LOW)
     GPIO.output(led_red, GPIO.LOW)
-    GPIO.output(return_no_load, GPIO.HIGH)
-    time.sleep(1)
-    GPIO.output(return_no_load, GPIO.LOW)  
+    GPIO.output(no_load, GPIO.HIGH)
+    GPIO.output(load, GPIO.LOW)
+    GPIO.output(over_load, GPIO.LOW)
+
+def checkPreviousStation(barcode):    #check data in ICT station
+    try:
+        api_url = f'http://fvn-s-web01.friwo.local:5000/api/ProcessLock/FA/CheckPreviousStation/{barcode}/ICT'  
+        response = requests.post(api_url)
+        if response.status_code == 200 and response.text == '1':         
+            return True
+        else:
+            return False         
+    except Exception as e:
+        return False
 
 if __name__ == "__main__": 
+    default_led()
     port, channel = getInstrument()
-    parser = argparse.ArgumentParser()
-    # parser.add_argument("--channel", help="The file to be upload", default=channel.replace("\n",""))
-    # parser.add_argument("--port", help="Filename override", default=port)
-    parser.add_argument("--barcode", help="Barcode input", default="01962072-0-0-0")
-    # parser.add_argument("--flag", help="Flag", default="1")
-    # flag = 0 NO_LOAD
-    # flag = 1 LOAD
-    # flag = 2 OVER_LOAD
-    args = parser.parse_args()
-    if port !='' and channel !='':
-        try:
-            # Send PIO to switch NO_LOAD state with flag = 0
-            flag = '0' 
-            measure(channel.replace("\n",""),port,**args.__dict__)
-        except:
-            sys.exit(1)
-    elif channel =='':
-        printColour("RED", "No channel found")
-        # sys.exit(1)
-        
-
+    while True:      
+        try: 
+            barcode = input("Barcode: ") 
+            default_led()   # user scan barcode
+            btn.wait_for_press()    # wait user press button    
+            if checkPreviousStation(barcode) == True:
+                if port !='' and channel !='':
+                    try:
+                        flag = '0' 
+                        measure(channel.replace("\n",""),port,barcode)
+                    except Exception as e:
+                        print(e)
+                elif channel =='':
+                    printColour("RED", "No channel found")
+            else:
+                printColour("RED", "Fail previous station")
+        except Exception as e:
+            printColour("RED",e)

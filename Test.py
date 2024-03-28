@@ -41,9 +41,10 @@ GPIO.setup(led_red, GPIO.OUT)
 GPIO.setup(no_load, GPIO.OUT)
 GPIO.setup(load, GPIO.OUT)
 GPIO.setup(over_load, GPIO.OUT)
-
-btn = Button(button_pin,pull_up=True)    # True: trigger low | False: trigger high
-
+try:
+    btn = Button(button_pin,pull_up=True)    # True: trigger low | False: trigger high
+except:
+    print("GPIO"+f"{button_pin}"+" is busy, still continue")   
 rm = visa.ResourceManager()
 
 class ResultData:
@@ -96,7 +97,7 @@ def setupInstrumentValue(channel, port, barcode, scope, temprs):    #setup value
         Volts, yzero, Time = getMeasurementInstrumentValue(channel, port, barcode,scope)
         return Volts, yzero, Time
     except Exception as e:
-        printColour("RED",e)
+        printColour("RED",str(e))
 
 def getMeasurementInstrumentValue(channel, port, barcode, scope):    #get date from the oscilloscope
     try:
@@ -186,22 +187,19 @@ def measure(channel, port, barcode):    #measure data and set pass/fail result
                         if flag == '0': 
                             GPIO.output(no_load, GPIO.LOW)
                             GPIO.output(load, GPIO.HIGH)
-                            GPIO.output(over_load, GPIO.LOW)
                         elif flag == '1':
-                            GPIO.output(no_load, GPIO.LOW)
                             GPIO.output(load, GPIO.LOW)
                             GPIO.output(over_load, GPIO.HIGH)   
                         else:
                             GPIO.output(over_load, GPIO.LOW) 
                             GPIO.output(no_load, GPIO.HIGH)
-                            GPIO.output(load, GPIO.LOW)  
                         time.sleep(1)
                 else:
                     printColour("RED","Can not find data to setup instrument in this part!")
                     break
         except Exception as e:
             excepts = e
-            printColour("RED",e)
+            printColour("RED",str(e))
         
         if result is not None and excepts is None:
             blob.status = status
@@ -225,7 +223,7 @@ def insertValue(data):    #insert data measured to database (DATA_BUS_SIGNAL)
         else:
             printColour("RED",f"Error: {response.status_code}"+ "\n" + f"{response.text}")        
     except Exception as e:
-        printColour("RED",e)
+        printColour("RED",str(e))
         
 def getInstrument():    #find oscilloscope and connect to it
     port = ""
@@ -269,23 +267,30 @@ def checkPreviousStation(barcode):    #check data in ICT station
         return False
 
 if __name__ == "__main__": 
-    default_led()
-    port, channel = getInstrument()
-    while True:      
-        try: 
-            barcode = input("Barcode: ") 
-            default_led()   # user scan barcode
-            btn.wait_for_press()    # wait user press button    
-            if checkPreviousStation(barcode) == True:
-                if port !='' and channel !='':
-                    try:
-                        flag = '0' 
-                        measure(channel.replace("\n",""),port,barcode)
-                    except Exception as e:
-                        print(e)
-                elif channel =='':
-                    printColour("RED", "No channel found")
-            else:
-                printColour("RED", "Fail previous station")
-        except Exception as e:
-            printColour("RED",e)
+    try:
+        default_led()
+        port, channel = getInstrument()
+        while True:      
+            try: 
+                barcode = input("Barcode: ") 
+                default_led()   # user scan barcode
+                btn.wait_for_press()    # wait user press button    
+                if checkPreviousStation(barcode) == True:
+                    if port !='' and channel !='':
+                        try:
+                            flag = '0' 
+                            measure(channel.replace("\n",""),port,barcode)
+                        except Exception as e:
+                            printColour("RED",str(e))
+                    elif channel =='':
+                        printColour("RED", "No channel found")
+                else:
+                    printColour("RED", "Fail previous station")
+            except Exception as e:
+                printColour("RED",str(e))
+    except Exception as e:
+        printColour("RED", str(e))
+    finally:
+        btn.close()
+        GPIO.cleanup()
+        rm.close()
